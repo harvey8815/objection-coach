@@ -164,6 +164,7 @@ export default function App() {
   const [diagMode, setDiagMode] = useState(false);
   const [aiMode, setAiMode] = useState(true);
   const [aiLoading, setAiLoading] = useState(false);
+  const [aiCallCount, setAiCallCount] = useState(0);
   const [businessProfile, setBusinessProfile] = useState({ name: "", offer: "", valueProp: "", targetCustomer: "" });
   const [showProfileSetup, setShowProfileSetup] = useState(false);
 
@@ -264,6 +265,7 @@ export default function App() {
     if (now - lastAiFiredRef.current < 12000) return;
     lastAiFiredRef.current = now;
     setAiLoading(true);
+    setAiCallCount(c => c + 1);
     setSegments(prev => [...prev.slice(-30), { text: "🤖 AI analyzing objection...", type: "system", time: new Date().toLocaleTimeString() }]);
 
     try {
@@ -335,14 +337,16 @@ export default function App() {
       }
     }
 
-    // STEP 2: AI fallback — runs if:
+    // STEP 2: AI fallback — only fires when ALL conditions met:
     // - AI mode is on
-    // - segment is substantial (5+ words — real sentence, not a fragment)
-    // - no active card showing right now
-    // - AI not currently loading
-    // Note: AI uses its OWN cooldown (lastAiFiredRef) so it can handle
-    // phrases even if preset dedup already ran on them
-    if (aiMode && !aiLoading && segmentText.trim().split(" ").length >= 5) {
+    // - segment is 8+ words (real sentence, not a fragment or filler)
+    // - not currently loading or showing a card
+    // - contains at least one objection-signal word
+    const words = segmentText.trim().split(" ");
+    const objectionSignals = ["not","no","don't","don't","can't","won't","isn't","aren't","haven't","already","too","busy","expensive","interested","need","want","time","money","budget","contract","call","back","think","sure","later","maybe","someone","tried","works","complicated","difficult","worried","concern","problem","issue","never","nothing","nobody","nobody","without","unless","instead","different","better","cheaper","free","wait","slow","hard","why","how","what","when","who"];
+    const hasSignal = words.some(w => objectionSignals.includes(w.toLowerCase().replace(/[^a-z']/g, "")));
+
+    if (aiMode && !aiLoading && words.length >= 8 && hasSignal) {
       fireAiRebuttal(segmentText, fullTranscriptRef.current.slice(-800));
     }
   }, [allObjList, fireObjection, aiMode, aiLoading, fireAiRebuttal]);
@@ -452,6 +456,7 @@ export default function App() {
     scannedSegmentsRef.current = new Set();
     lastAiFiredRef.current = 0;
     fullTranscriptRef.current = "";
+    setAiCallCount(0);
     setTimeout(() => startRecognition(), 400);
   };
 
@@ -725,7 +730,7 @@ export default function App() {
 
           <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
             <button onClick={() => setAiMode(!aiMode)} style={{ flex: 1, background: aiMode ? "rgba(99,102,241,0.15)" : "rgba(255,255,255,0.04)", border: aiMode ? "1px solid rgba(99,102,241,0.4)" : "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "8px 12px", color: aiMode ? "#a5b4fc" : "#475569", fontSize: 11, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-              🤖 AI Fallback {aiMode ? "ON" : "OFF"}
+              🤖 AI {aiMode ? "ON" : "OFF"} {aiMode && aiCallCount > 0 ? `· ${aiCallCount} calls` : ""}
             </button>
             <button onClick={() => setShowProfileSetup(!showProfileSetup)} style={{ flex: 1, background: (businessProfile.name || businessProfile.offer) ? "rgba(34,197,94,0.1)" : "rgba(255,255,255,0.04)", border: (businessProfile.name || businessProfile.offer) ? "1px solid rgba(34,197,94,0.3)" : "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "8px 12px", color: (businessProfile.name || businessProfile.offer) ? "#22c55e" : "#475569", fontSize: 11, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
               🏢 {businessProfile.name || "Business Profile"}
