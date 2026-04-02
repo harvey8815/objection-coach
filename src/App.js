@@ -147,6 +147,15 @@ export default function App() {
   const [businessProfile, setBusinessProfile] = useState({ name: "", offer: "", valueProp: "", targetCustomer: "" });
   const [showProfileSetup, setShowProfileSetup] = useState(false);
 
+  // ── PHASE 2 STATE ─────────────────────────────────────────────────────
+  const [currentRep, setCurrentRep] = useState(null); // selected rep for this session
+  const [teamRoster, setTeamRoster] = useState([]); // admin-loaded rep list
+  const [allSessions, setAllSessions] = useState([]); // all historical sessions
+  const [showRepSelect, setShowRepSelect] = useState(false);
+  const [showRosterAdmin, setShowRosterAdmin] = useState(false);
+  const [newRepName, setNewRepName] = useState("");
+  const [leaderboardPeriod, setLeaderboardPeriod] = useState("week"); // week | month | all
+
   const recognitionRef = useRef(null);
   const dismissTimer = useRef(null);
   const isListeningRef = useRef(false);
@@ -173,6 +182,24 @@ export default function App() {
   const confidenceLabel = confidence > 66 ? "STRONG" : confidence > 33 ? "HOLD" : "PIVOT";
   const sourceLabels = { mic: "🎙️ Headset Mic", system: "🔊 System Audio", speakerphone: "📱 Speakerphone" };
   const statusColor = { idle: "#475569", requesting: "#f59e0b", listening: "#22c55e", error: "#ef4444" }[statusType] || "#475569";
+
+  // ── PHASE 2 COMPUTED ──────────────────────────────────────────────────
+  const getLeaderboard = () => {
+    const now = Date.now();
+    const cutoff = leaderboardPeriod === "week" ? 7 : leaderboardPeriod === "month" ? 30 : 9999;
+    const filtered = allSessions.filter(s => (now - s.timestamp) / 86400000 <= cutoff);
+    const repStats = {};
+    filtered.forEach(s => {
+      if (!repStats[s.repName]) repStats[s.repName] = { name: s.repName, sessions: 0, objections: 0, streak: 0, totalDuration: 0 };
+      repStats[s.repName].sessions++;
+      repStats[s.repName].objections += s.objectionCount;
+      repStats[s.repName].streak = Math.max(repStats[s.repName].streak, s.streak);
+      repStats[s.repName].totalDuration += s.durationSecs || 0;
+    });
+    return Object.values(repStats).sort((a, b) => b.objections - a.objections);
+  };
+
+  const repSessions = currentRep ? allSessions.filter(s => s.repName === currentRep.name).slice().reverse() : [];
 
   const fireObjection = useCallback((obj, matchedText) => {
     const now = Date.now();
@@ -380,6 +407,7 @@ export default function App() {
   const handleStartCoaching = () => {
     if (!selectedProduct) { setScreen("product-select"); return; }
     if (!audioSource) { setScreen("audio-select"); return; }
+    if (!currentRep) { setShowRepSelect(true); return; }
     setScreen("coach");
     setTranscript(""); setSegments([]); setActiveCard(null);
     setTriggerCount({}); setStreak(0); setCallLog([]);
@@ -397,7 +425,30 @@ export default function App() {
     const duration = Math.round((Date.now() - callStartTime) / 1000);
     const catCounts = {};
     callLog.forEach(l => { catCounts[l.category] = (catCounts[l.category] || 0) + 1; });
-    setSessionSummary({ duration: `${Math.floor(duration / 60)}m ${duration % 60}s`, objectionCount: callLog.length, streak, topCategory: Object.keys(catCounts).sort((a, b) => catCounts[b] - catCounts[a])[0] || "None", log: callLog, product: activeProduct });
+    const topCategory = Object.keys(catCounts).sort((a, b) => catCounts[b] - catCounts[a])[0] || "None";
+    const summary = {
+      duration: `${Math.floor(duration / 60)}m ${duration % 60}s`,
+      objectionCount: callLog.length, streak, topCategory,
+      log: callLog, product: activeProduct
+    };
+    setSessionSummary(summary);
+    // Save session to history
+    if (currentRep) {
+      const session = {
+        id: Date.now(),
+        timestamp: Date.now(),
+        repName: currentRep.name,
+        productName: activeProduct ? activeProduct.name : "Unknown",
+        productColor: activeProduct ? activeProduct.color : "#6366f1",
+        objectionCount: callLog.length,
+        streak,
+        topCategory,
+        durationSecs: duration,
+        duration: summary.duration,
+        log: callLog
+      };
+      setAllSessions(prev => [...prev, session]);
+    }
     setScreen("summary");
   };
 
@@ -457,6 +508,18 @@ export default function App() {
               </div>
             ))}
           </div>
+          {/* Rep selector */}
+          <div onClick={() => setShowRepSelect(true)} style={{ ...S.card, padding: "12px 16px", marginBottom: 14, cursor: "pointer", border: currentRep ? "1px solid rgba(34,197,94,0.3)" : "1px solid rgba(239,68,68,0.3)", background: currentRep ? "rgba(34,197,94,0.06)" : "rgba(239,68,68,0.05)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ fontSize: 20 }}>👤</span>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: currentRep ? "#22c55e" : "#ef4444" }}>{currentRep ? currentRep.name : "No Rep Selected"}</div>
+                <div style={{ fontSize: 11, color: "#475569" }}>{currentRep ? "Tap to switch rep" : "Tap to select rep before coaching"}</div>
+              </div>
+            </div>
+            <span style={{ fontSize: 12, color: "#475569" }}>›</span>
+          </div>
+
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <button onClick={() => setScreen("product-select")} style={{ ...S.btn(productColor), display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}>
               {activeProduct ? <><span>{activeProduct.icon}</span>Change Product</> : <><span>🎯</span>Select Product to Pitch</>}
@@ -464,11 +527,23 @@ export default function App() {
             <button onClick={handleStartCoaching} style={{ ...S.btn("#6366f1"), display: "flex", alignItems: "center", justifyContent: "center", gap: 10, opacity: selectedProduct && audioSource ? 1 : 0.5 }}>
               <span style={{ fontSize: 20 }}>🎙️</span>Start Live Coaching
             </button>
+            {/* Phase 2 Nav */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <button onClick={() => setScreen("leaderboard")} style={{ background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.3)", borderRadius: 14, padding: "13px", color: "#f59e0b", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                🏆 Leaderboard
+              </button>
+              <button onClick={() => setScreen("dashboard")} style={{ background: "rgba(99,102,241,0.1)", border: "1px solid rgba(99,102,241,0.3)", borderRadius: 14, padding: "13px", color: "#a5b4fc", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                📊 Dashboard
+              </button>
+            </div>
             <button onClick={() => setScreen("audio-select")} style={{ background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.2)", borderRadius: 14, padding: "13px", color: "#22c55e", fontSize: 14, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
               🔊 Audio Source Setup
             </button>
             <button onClick={() => selectedProduct ? setScreen("drill") : setScreen("product-select")} style={{ background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.3)", borderRadius: 14, padding: "13px", color: "#f59e0b", fontSize: 14, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
               🏋️ Objection Drill Mode
+            </button>
+            <button onClick={() => setScreen("roster")} style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, padding: "13px", color: "#64748b", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+              👥 Team Roster
             </button>
             <button onClick={() => selectedProduct ? setScreen("admin") : setScreen("product-select")} style={{ ...S.ghost, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
               ⚙️ Manage Objections
@@ -717,6 +792,7 @@ export default function App() {
           )}
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <button onClick={handleStartCoaching} style={{ ...S.btn(productColor), display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>🎙️ Start New Call</button>
+            <button onClick={() => setScreen("history")} style={{ background: "rgba(99,102,241,0.1)", border: "1px solid rgba(99,102,241,0.25)", borderRadius: 14, padding: "14px", color: "#a5b4fc", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>📋 View My Call History</button>
             <button onClick={() => setScreen("home")} style={S.ghost}>← Back to Home</button>
           </div>
         </div>
@@ -811,6 +887,209 @@ export default function App() {
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {/* REP SELECT MODAL */}
+      {showRepSelect && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 100, display: "flex", alignItems: "flex-end" }}>
+          <div style={{ background: "#0F1420", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "20px 20px 0 0", width: "100%", padding: "24px 20px 40px", maxWidth: 480, margin: "0 auto" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+              <h3 style={{ fontSize: 18, fontWeight: 800, margin: 0 }}>Who's making calls?</h3>
+              <button onClick={() => setShowRepSelect(false)} style={{ background: "none", border: "none", color: "#475569", fontSize: 20, cursor: "pointer" }}>✕</button>
+            </div>
+            {teamRoster.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "20px 0" }}>
+                <div style={{ fontSize: 32, marginBottom: 12 }}>👥</div>
+                <p style={{ color: "#475569", fontSize: 14, marginBottom: 16 }}>No reps loaded yet. Go to Team Roster to add your team.</p>
+                <button onClick={() => { setShowRepSelect(false); setScreen("roster"); }} style={{ background: "rgba(99,102,241,0.15)", border: "1px solid rgba(99,102,241,0.3)", borderRadius: 12, padding: "12px 24px", color: "#a5b4fc", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Go to Team Roster</button>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {teamRoster.map(rep => (
+                  <div key={rep.id} onClick={() => { setCurrentRep(rep); setShowRepSelect(false); }} style={{ background: currentRep && currentRep.id === rep.id ? "rgba(99,102,241,0.15)" : "rgba(255,255,255,0.04)", border: currentRep && currentRep.id === rep.id ? "1px solid rgba(99,102,241,0.4)" : "1px solid rgba(255,255,255,0.07)", borderRadius: 14, padding: "14px 16px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                      <div style={{ width: 38, height: 38, borderRadius: "50%", background: "rgba(99,102,241,0.2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 800, color: "#a5b4fc" }}>{rep.name[0]}</div>
+                      <div>
+                        <div style={{ fontWeight: 700, fontSize: 14 }}>{rep.name}</div>
+                        <div style={{ fontSize: 11, color: "#475569" }}>{rep.role || "Sales Rep"}</div>
+                      </div>
+                    </div>
+                    {currentRep && currentRep.id === rep.id && <span style={{ color: "#22c55e", fontSize: 18 }}>✓</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* TEAM ROSTER */}
+      {screen === "roster" && (
+        <div style={S.wrap}>
+          <button onClick={() => setScreen("home")} style={S.back}>← Back</button>
+          <h2 style={{ fontSize: 24, fontWeight: 800, marginBottom: 4 }}>Team Roster</h2>
+          <p style={{ color: "#475569", fontSize: 13, marginBottom: 20 }}>Add your reps here so they can be tracked and ranked.</p>
+          <div style={{ ...S.card, padding: 16, marginBottom: 16 }}>
+            <div style={{ fontSize: 12, color: "#f59e0b", fontWeight: 700, marginBottom: 12 }}>Add New Rep</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input value={newRepName} onChange={e => setNewRepName(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && newRepName.trim()) { setTeamRoster(prev => [...prev, { id: Date.now(), name: newRepName.trim(), role: "Sales Rep" }]); setNewRepName(""); }}} placeholder="Rep name..." style={{ flex: 1, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, padding: "10px 12px", color: "#E8EDF5", fontSize: 14, fontFamily: "inherit" }} />
+              <button onClick={() => { if (newRepName.trim()) { setTeamRoster(prev => [...prev, { id: Date.now(), name: newRepName.trim(), role: "Sales Rep" }]); setNewRepName(""); }}} style={{ background: "rgba(34,197,94,0.15)", border: "1px solid rgba(34,197,94,0.3)", borderRadius: 10, padding: "10px 16px", color: "#22c55e", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Add</button>
+            </div>
+          </div>
+          {teamRoster.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "40px 20px", color: "#334155" }}>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>👥</div>
+              <p style={{ fontSize: 14 }}>No reps added yet. Add your first rep above.</p>
+            </div>
+          ) : (
+            teamRoster.map(rep => (
+              <div key={rep.id} style={{ ...S.card, padding: "14px 16px", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <div style={{ width: 36, height: 36, borderRadius: "50%", background: "rgba(99,102,241,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 800, color: "#a5b4fc" }}>{rep.name[0]}</div>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 14 }}>{rep.name}</div>
+                    <div style={{ fontSize: 11, color: "#475569" }}>{rep.role}</div>
+                  </div>
+                </div>
+                <button onClick={() => setTeamRoster(prev => prev.filter(r => r.id !== rep.id))} style={{ background: "rgba(239,68,68,0.1)", border: "none", borderRadius: 8, padding: "5px 10px", color: "#ef4444", fontSize: 11, cursor: "pointer" }}>Remove</button>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      {/* LEADERBOARD */}
+      {screen === "leaderboard" && (
+        <div style={S.wrap}>
+          <button onClick={() => setScreen("home")} style={S.back}>← Back</button>
+          <h2 style={{ fontSize: 24, fontWeight: 800, marginBottom: 4 }}>🏆 Leaderboard</h2>
+          <p style={{ color: "#475569", fontSize: 13, marginBottom: 16 }}>Rankings based on objections handled</p>
+          <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+            {[["week","This Week"],["month","This Month"],["all","All Time"]].map(([val,label]) => (
+              <button key={val} onClick={() => setLeaderboardPeriod(val)} style={{ flex: 1, background: leaderboardPeriod === val ? "rgba(245,158,11,0.2)" : "rgba(255,255,255,0.04)", border: leaderboardPeriod === val ? "1px solid rgba(245,158,11,0.4)" : "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "8px", color: leaderboardPeriod === val ? "#f59e0b" : "#64748b", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{label}</button>
+            ))}
+          </div>
+          {getLeaderboard().length === 0 ? (
+            <div style={{ textAlign: "center", padding: "40px 20px" }}>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>🏆</div>
+              <p style={{ color: "#334155", fontSize: 14 }}>No sessions recorded yet. Start coaching to see rankings.</p>
+            </div>
+          ) : (
+            getLeaderboard().map((rep, i) => (
+              <div key={rep.name} style={{ ...S.card, padding: "16px", marginBottom: 10, border: i === 0 ? "1px solid rgba(245,158,11,0.3)" : "1px solid rgba(255,255,255,0.07)", background: i === 0 ? "rgba(245,158,11,0.06)" : "rgba(255,255,255,0.04)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                  <div style={{ fontSize: i === 0 ? 28 : 20, minWidth: 36, textAlign: "center" }}>{i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `#${i+1}`}</div>
+                  <div style={{ width: 40, height: 40, borderRadius: "50%", background: i === 0 ? "rgba(245,158,11,0.2)" : "rgba(99,102,241,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 800, color: i === 0 ? "#f59e0b" : "#a5b4fc" }}>{rep.name[0]}</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 800, fontSize: 15, color: i === 0 ? "#f59e0b" : "#E8EDF5" }}>{rep.name}</div>
+                    <div style={{ fontSize: 11, color: "#475569" }}>{rep.sessions} session{rep.sessions !== 1 ? "s" : ""} · Best streak: {rep.streak}</div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ fontSize: 22, fontWeight: 800, color: i === 0 ? "#f59e0b" : "#6366f1" }}>{rep.objections}</div>
+                    <div style={{ fontSize: 10, color: "#475569", textTransform: "uppercase" }}>Handled</div>
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      {/* MANAGER DASHBOARD */}
+      {screen === "dashboard" && (
+        <div style={S.wrap}>
+          <button onClick={() => setScreen("home")} style={S.back}>← Back</button>
+          <h2 style={{ fontSize: 24, fontWeight: 800, marginBottom: 4 }}>📊 Manager Dashboard</h2>
+          <p style={{ color: "#475569", fontSize: 13, marginBottom: 20 }}>Team-wide performance overview</p>
+          {/* Team stats */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 20 }}>
+            {[
+              { label: "Total Sessions", value: allSessions.length, icon: "📞" },
+              { label: "Total Objections", value: allSessions.reduce((a,s) => a + s.objectionCount, 0), icon: "🎯" },
+              { label: "Active Reps", value: new Set(allSessions.map(s => s.repName)).size, icon: "👤" },
+              { label: "Avg Objections/Call", value: allSessions.length ? Math.round(allSessions.reduce((a,s) => a + s.objectionCount, 0) / allSessions.length) : 0, icon: "📈" }
+            ].map(s => (
+              <div key={s.label} style={{ ...S.card, padding: 14 }}>
+                <div style={{ fontSize: 20, marginBottom: 6 }}>{s.icon}</div>
+                <div style={{ fontSize: 22, fontWeight: 800, color: "#f59e0b" }}>{s.value}</div>
+                <div style={{ fontSize: 10, color: "#475569", textTransform: "uppercase", letterSpacing: 1 }}>{s.label}</div>
+              </div>
+            ))}
+          </div>
+          {/* Recent sessions */}
+          <div style={{ fontSize: 12, color: "#475569", textTransform: "uppercase", letterSpacing: 2, marginBottom: 12 }}>Recent Sessions</div>
+          {allSessions.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "30px 20px", color: "#334155" }}>
+              <div style={{ fontSize: 36, marginBottom: 10 }}>📊</div>
+              <p style={{ fontSize: 14 }}>No sessions recorded yet. Start coaching to see data here.</p>
+            </div>
+          ) : (
+            [...allSessions].reverse().slice(0, 10).map(s => (
+              <div key={s.id} style={{ ...S.card, padding: "12px 14px", marginBottom: 8 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <div style={{ width: 32, height: 32, borderRadius: "50%", background: `${s.productColor}20`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 800, color: s.productColor || "#6366f1" }}>{s.repName[0]}</div>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 13 }}>{s.repName}</div>
+                      <div style={{ fontSize: 11, color: "#475569" }}>{s.productName} · {s.duration}</div>
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ fontSize: 16, fontWeight: 800, color: "#6366f1" }}>{s.objectionCount}</div>
+                    <div style={{ fontSize: 10, color: "#475569" }}>handled</div>
+                  </div>
+                </div>
+                {s.topCategory !== "None" && <div style={{ marginTop: 6, fontSize: 11, color: "#475569" }}>Top: {s.topCategory} · Streak: {s.streak}</div>}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      {/* CALL HISTORY (per rep) */}
+      {screen === "history" && (
+        <div style={S.wrap}>
+          <button onClick={() => setScreen("home")} style={S.back}>← Back</button>
+          <h2 style={{ fontSize: 24, fontWeight: 800, marginBottom: 4 }}>📋 Call History</h2>
+          <p style={{ color: "#475569", fontSize: 13, marginBottom: 16 }}>{currentRep ? currentRep.name + "'s sessions" : "Select a rep to view history"}</p>
+          {!currentRep ? (
+            <div style={{ textAlign: "center", padding: "30px 20px" }}>
+              <p style={{ color: "#334155" }}>No rep selected. Go back and select a rep first.</p>
+            </div>
+          ) : repSessions.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "30px 20px" }}>
+              <div style={{ fontSize: 36, marginBottom: 10 }}>📋</div>
+              <p style={{ color: "#334155", fontSize: 14 }}>No sessions yet for {currentRep.name}. Start coaching to build history.</p>
+            </div>
+          ) : (
+            repSessions.map(s => (
+              <div key={s.id} style={{ ...S.card, marginBottom: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 14 }}>{s.productName}</div>
+                    <div style={{ fontSize: 11, color: "#475569" }}>{new Date(s.timestamp).toLocaleDateString()} · {s.duration}</div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ fontSize: 20, fontWeight: 800, color: "#f59e0b" }}>{s.objectionCount}</div>
+                    <div style={{ fontSize: 10, color: "#475569" }}>handled</div>
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{ background: "rgba(245,158,11,0.1)", color: "#f59e0b", fontSize: 11, padding: "3px 8px", borderRadius: 99 }}>🔥 Streak: {s.streak}</span>
+                  {s.topCategory !== "None" && <span style={{ background: "rgba(99,102,241,0.1)", color: "#a5b4fc", fontSize: 11, padding: "3px 8px", borderRadius: 99 }}>Top: {s.topCategory}</span>}
+                </div>
+                {s.log && s.log.length > 0 && (
+                  <div style={{ marginTop: 10, borderTop: "1px solid rgba(255,255,255,0.06)", paddingTop: 8 }}>
+                    {s.log.slice(0, 4).map((l, i) => (
+                      <div key={i} style={{ fontSize: 11, color: "#475569", marginBottom: 3 }}>"{l.trigger}" → {l.category}</div>
+                    ))}
+                    {s.log.length > 4 && <div style={{ fontSize: 11, color: "#334155" }}>+{s.log.length - 4} more</div>}
+                  </div>
+                )}
+              </div>
+            ))
+          )}
         </div>
       )}
 
