@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 
 function matchesObjection(text, obj) {
   const t = text.toLowerCase();
@@ -114,6 +114,7 @@ const PRODUCTS = {
   }
 };
 
+const DEFAULT_PRODUCTS = PRODUCTS;
 const CATEGORIES = ["All","Dismissive","Timing","Budget","Existing Solution","Decision","Stalling","Trust","AI Skepticism","Positive"];
 
 export default function App() {
@@ -155,6 +156,12 @@ export default function App() {
   const [showRosterAdmin, setShowRosterAdmin] = useState(false);
   const [newRepName, setNewRepName] = useState("");
   const [leaderboardPeriod, setLeaderboardPeriod] = useState("week"); // week | month | all
+  const [customProducts, setCustomProducts] = useState({}); // overrides for product name/desc/price/color
+  const [showProductMgmt, setShowProductMgmt] = useState(false);
+  const [editingProduct, setEditingProduct] = useState(null);
+  const [newProductForm, setNewProductForm] = useState({ name: "", subtitle: "", price: "", color: "#6366f1", icon: "🎯" });
+  const [showNewProductForm, setShowNewProductForm] = useState(false);
+  const [customProductsList, setCustomProductsList] = useState([]); // user-created products
 
   const recognitionRef = useRef(null);
   const dismissTimer = useRef(null);
@@ -170,7 +177,17 @@ export default function App() {
   // ── Rolling transcript for AI context ──
   const fullTranscriptRef = useRef("");
 
-  const activeProduct = selectedProduct ? PRODUCTS[selectedProduct] : null;
+  // Merge default products with any custom overrides + user-created products
+  const allProducts = {
+    ...Object.fromEntries(
+      Object.entries(PRODUCTS).map(([key, p]) => [
+        key,
+        customProducts[key] ? { ...p, ...customProducts[key] } : p
+      ])
+    ),
+    ...Object.fromEntries(customProductsList.map(p => [p.id, p]))
+  };
+  const activeProduct = selectedProduct ? (allProducts[selectedProduct] || null) : null;
   const baseList = activeProduct ? activeProduct.objections : [];
   const customList = selectedProduct ? (customObjections[selectedProduct] || []) : [];
   const allObjList = [...baseList.map(o => { const c = customList.find(x => x.id === o.id); return c ? { ...o, ...c } : o; }), ...customList.filter(c => c.id > 900 && !c._deleted)].filter(o => !o._deleted);
@@ -558,8 +575,8 @@ export default function App() {
           <button onClick={() => setScreen("home")} style={S.back}>← Back</button>
           <h2 style={{ fontSize: 24, fontWeight: 800, marginBottom: 6 }}>What are you pitching?</h2>
           <p style={{ color: "#475569", fontSize: 13, marginBottom: 28 }}>Select the product your rep is selling. Only that product's rebuttals will fire during the call.</p>
-          {Object.values(PRODUCTS).map(p => (
-            <div key={p.id} onClick={() => { setSelectedProduct(p.id); drillRef.current = [...p.objections].sort(() => Math.random() - 0.5); setDrillIndex(0); }} style={{ ...S.card, padding: 20, marginBottom: 12, cursor: "pointer", border: selectedProduct === p.id ? `1px solid ${p.color}70` : "1px solid rgba(255,255,255,0.07)", background: selectedProduct === p.id ? `${p.color}0c` : "rgba(255,255,255,0.04)", transition: "all 0.15s" }}>
+          {Object.values(allProducts).map(p => (
+            <div key={p.id} onClick={() => { setSelectedProduct(p.id); drillRef.current = [...(p.objections || [])].sort(() => Math.random() - 0.5); setDrillIndex(0); }} style={{ ...S.card, padding: 20, marginBottom: 12, cursor: "pointer", border: selectedProduct === p.id ? `1px solid ${p.color}70` : "1px solid rgba(255,255,255,0.07)", background: selectedProduct === p.id ? `${p.color}0c` : "rgba(255,255,255,0.04)", transition: "all 0.15s" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                 <div style={{ display: "flex", gap: 14 }}>
                   <div style={{ fontSize: 28 }}>{p.icon}</div>
@@ -568,7 +585,7 @@ export default function App() {
                     <div style={{ fontSize: 12, color: "#64748b", marginBottom: 8 }}>{p.subtitle}</div>
                     <div style={{ display: "flex", gap: 8 }}>
                       <span style={{ background: `${p.color}18`, color: p.color, fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 99 }}>{p.price}</span>
-                      <span style={{ background: "rgba(255,255,255,0.06)", color: "#64748b", fontSize: 11, padding: "3px 10px", borderRadius: 99 }}>{p.objections.length} objections</span>
+                      <span style={{ background: "rgba(255,255,255,0.06)", color: "#64748b", fontSize: 11, padding: "3px 10px", borderRadius: 99 }}>{(p.objections || []).length} objections</span>
                     </div>
                   </div>
                 </div>
@@ -576,7 +593,8 @@ export default function App() {
               </div>
             </div>
           ))}
-          {selectedProduct && <button onClick={() => setScreen(audioSource ? "home" : "audio-select")} style={{ ...S.btn(productColor), marginTop: 8 }}>{activeProduct?.icon} Confirm — Use {activeProduct?.name}</button>}
+          <button onClick={() => setScreen("manage-products")} style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, padding: "13px", color: "#64748b", fontSize: 13, fontWeight: 600, cursor: "pointer", marginBottom: 10 }}>⚙️ Manage Products</button>
+          {selectedProduct && <button onClick={() => setScreen(audioSource ? "home" : "audio-select")} style={{ ...S.btn(productColor), marginTop: 4 }}>{activeProduct?.icon} Confirm — Use {activeProduct?.name}</button>}
         </div>
       )}
 
@@ -887,6 +905,127 @@ export default function App() {
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {/* MANAGE PRODUCTS */}
+      {screen === "manage-products" && (
+        <div style={{ ...S.wrap, maxWidth: 540 }}>
+          <button onClick={() => setScreen("product-select")} style={S.back}>← Back</button>
+          <h2 style={{ fontSize: 24, fontWeight: 800, marginBottom: 4 }}>⚙️ Manage Products</h2>
+          <p style={{ color: "#475569", fontSize: 13, marginBottom: 20 }}>Rename, recolor, or add new products for your sales team.</p>
+
+          {/* Edit existing products */}
+          <div style={{ fontSize: 11, color: "#475569", textTransform: "uppercase", letterSpacing: 2, marginBottom: 12 }}>Edit Existing Products</div>
+          {Object.values(PRODUCTS).map(p => {
+            const override = customProducts[p.id] || {};
+            const current = { ...p, ...override };
+            const isEditing = editingProduct === p.id;
+            return (
+              <div key={p.id} style={{ ...S.card, marginBottom: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: isEditing ? 14 : 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ fontSize: 22 }}>{current.icon}</span>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 14, color: current.color }}>{current.name}</div>
+                      <div style={{ fontSize: 11, color: "#475569" }}>{current.price}</div>
+                    </div>
+                  </div>
+                  <button onClick={() => setEditingProduct(isEditing ? null : p.id)} style={{ background: isEditing ? "rgba(99,102,241,0.2)" : "rgba(255,255,255,0.06)", border: "none", borderRadius: 8, padding: "5px 12px", color: isEditing ? "#a5b4fc" : "#64748b", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{isEditing ? "Done" : "Edit"}</button>
+                </div>
+                {isEditing && (
+                  <div>
+                    {[
+                      { key: "name", label: "Product Name", ph: p.name },
+                      { key: "subtitle", label: "Subtitle / Description", ph: p.subtitle },
+                      { key: "price", label: "Price", ph: p.price },
+                      { key: "icon", label: "Icon (emoji)", ph: p.icon }
+                    ].map(f => (
+                      <div key={f.key} style={{ marginBottom: 10 }}>
+                        <label style={{ fontSize: 10, color: "#475569", textTransform: "uppercase", letterSpacing: 1, display: "block", marginBottom: 4 }}>{f.label}</label>
+                        <input
+                          value={override[f.key] !== undefined ? override[f.key] : p[f.key]}
+                          onChange={e => setCustomProducts(prev => ({ ...prev, [p.id]: { ...(prev[p.id] || {}), [f.key]: e.target.value } }))}
+                          placeholder={f.ph}
+                          style={{ width: "100%", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "8px 11px", color: "#E8EDF5", fontSize: 13, boxSizing: "border-box", fontFamily: "inherit" }}
+                        />
+                      </div>
+                    ))}
+                    <div style={{ marginBottom: 10 }}>
+                      <label style={{ fontSize: 10, color: "#475569", textTransform: "uppercase", letterSpacing: 1, display: "block", marginBottom: 4 }}>Accent Color</label>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <input type="color" value={override.color || p.color} onChange={e => setCustomProducts(prev => ({ ...prev, [p.id]: { ...(prev[p.id] || {}), color: e.target.value } }))} style={{ width: 44, height: 36, borderRadius: 8, border: "none", cursor: "pointer", background: "none" }} />
+                        <span style={{ fontSize: 12, color: "#64748b" }}>{override.color || p.color}</span>
+                      </div>
+                    </div>
+                    <button onClick={() => { setCustomProducts(prev => { const n = { ...prev }; delete n[p.id]; return n; }); }} style={{ fontSize: 11, color: "#ef4444", background: "none", border: "none", cursor: "pointer", padding: 0 }}>↺ Reset to default</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          {/* Custom products */}
+          {customProductsList.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <div style={{ fontSize: 11, color: "#475569", textTransform: "uppercase", letterSpacing: 2, marginBottom: 12 }}>Custom Products</div>
+              {customProductsList.map(p => (
+                <div key={p.id} style={{ ...S.card, padding: "14px 16px", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ fontSize: 22 }}>{p.icon}</span>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 14, color: p.color }}>{p.name}</div>
+                      <div style={{ fontSize: 11, color: "#475569" }}>{p.price} · {(p.objections || []).length} objections</div>
+                    </div>
+                  </div>
+                  <button onClick={() => setCustomProductsList(prev => prev.filter(x => x.id !== p.id))} style={{ background: "rgba(239,68,68,0.1)", border: "none", borderRadius: 8, padding: "5px 10px", color: "#ef4444", fontSize: 11, cursor: "pointer" }}>Delete</button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Add new product */}
+          <div style={{ marginTop: 16 }}>
+            <div style={{ fontSize: 11, color: "#475569", textTransform: "uppercase", letterSpacing: 2, marginBottom: 12 }}>Add New Product</div>
+            <button onClick={() => setShowNewProductForm(!showNewProductForm)} style={{ width: "100%", background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.3)", borderRadius: 12, padding: "12px", color: "#f59e0b", fontSize: 13, fontWeight: 700, cursor: "pointer", marginBottom: 12 }}>
+              {showNewProductForm ? "▲ Cancel" : "+ Add New Product"}
+            </button>
+            {showNewProductForm && (
+              <div style={{ ...S.card, padding: 16 }}>
+                {[
+                  { key: "name", label: "Product Name", ph: "e.g. Starter Package" },
+                  { key: "subtitle", label: "Subtitle", ph: "e.g. Basic plan for small teams" },
+                  { key: "price", label: "Price", ph: "e.g. $299/mo" },
+                  { key: "icon", label: "Icon (emoji)", ph: "🎯" }
+                ].map(f => (
+                  <div key={f.key} style={{ marginBottom: 10 }}>
+                    <label style={{ fontSize: 10, color: "#475569", textTransform: "uppercase", letterSpacing: 1, display: "block", marginBottom: 4 }}>{f.label}</label>
+                    <input value={newProductForm[f.key]} onChange={e => setNewProductForm(p => ({ ...p, [f.key]: e.target.value }))} placeholder={f.ph} style={{ width: "100%", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "8px 11px", color: "#E8EDF5", fontSize: 13, boxSizing: "border-box", fontFamily: "inherit" }} />
+                  </div>
+                ))}
+                <div style={{ marginBottom: 12 }}>
+                  <label style={{ fontSize: 10, color: "#475569", textTransform: "uppercase", letterSpacing: 1, display: "block", marginBottom: 4 }}>Accent Color</label>
+                  <input type="color" value={newProductForm.color} onChange={e => setNewProductForm(p => ({ ...p, color: e.target.value }))} style={{ width: 44, height: 36, borderRadius: 8, border: "none", cursor: "pointer" }} />
+                </div>
+                <button onClick={() => {
+                  if (!newProductForm.name) return;
+                  const newP = {
+                    id: "custom_" + Date.now(),
+                    name: newProductForm.name,
+                    subtitle: newProductForm.subtitle || "Custom product",
+                    price: newProductForm.price || "Custom",
+                    color: newProductForm.color,
+                    icon: newProductForm.icon || "🎯",
+                    objections: []
+                  };
+                  setCustomProductsList(prev => [...prev, newP]);
+                  setNewProductForm({ name: "", subtitle: "", price: "", color: "#6366f1", icon: "🎯" });
+                  setShowNewProductForm(false);
+                }} style={{ ...S.btn("#22c55e") }}>Create Product</button>
+                <p style={{ fontSize: 11, color: "#475569", marginTop: 8, textAlign: "center" }}>After creating, go to Manage Objections to add objections to this product.</p>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
