@@ -240,8 +240,8 @@ export default function App() {
   const fireObjection = useCallback((obj, matchedText) => {
     const now = Date.now();
     const lastFired = firedRef.current[obj.id] || 0;
-    // Hard cooldown: same objection cannot fire again within 15 seconds
-    if (now - lastFired < 15000) return;
+    // Cooldown: same objection cannot fire again within 6 seconds
+    if (now - lastFired < 6000) return;
     firedRef.current[obj.id] = now;
 
     setTriggerCount(prev => {
@@ -310,41 +310,40 @@ export default function App() {
     }
   }, [businessProfile, activeProduct]);
 
-  // ── CORE: check NEW segments, smart dedup per match type ──────────────
+  // ── CORE: segment checking with smart dedup ─────────────────────────────
   const checkNewSegment = useCallback((segmentText) => {
     if (!segmentText || segmentText.trim().length < 2) return;
-    const key = segmentText.trim().toLowerCase().slice(0, 80);
 
-    // Keep rolling transcript for AI context regardless
+    // Keep rolling transcript for AI context
     fullTranscriptRef.current = (fullTranscriptRef.current + " " + segmentText).slice(-1500);
 
-    // Check if we already processed this segment for PRESET matching
-    const alreadyScanned = scannedSegmentsRef.current.has(key);
+    // Dedup key — prevent the EXACT same audio chunk from firing twice
+    // (Speech API sometimes sends same result twice within milliseconds)
+    const key = segmentText.trim().toLowerCase().slice(0, 80) + "_" + Math.floor(Date.now() / 1000);
+    if (scannedSegmentsRef.current.has(key)) return;
+    scannedSegmentsRef.current.add(key);
+    if (scannedSegmentsRef.current.size > 100) {
+      const arr = Array.from(scannedSegmentsRef.current);
+      scannedSegmentsRef.current = new Set(arr.slice(-100));
+    }
 
-    if (!alreadyScanned) {
-      scannedSegmentsRef.current.add(key);
-      if (scannedSegmentsRef.current.size > 60) {
-        const arr = Array.from(scannedSegmentsRef.current);
-        scannedSegmentsRef.current = new Set(arr.slice(-60));
-      }
-
-      // STEP 1: instant preset match on new segments only
-      for (const obj of allObjList) {
-        if (matchesObjection(segmentText, obj)) {
-          fireObjection(obj, segmentText);
-          return; // preset matched — done
-        }
+    // STEP 1: Preset match — fires instantly, no API cost
+    // The fireObjection function handles its own 6-second per-objection cooldown
+    // so repeating the same objection after 6s will work correctly
+    for (const obj of allObjList) {
+      if (matchesObjection(segmentText, obj)) {
+        fireObjection(obj, segmentText);
+        return; // preset matched — done
       }
     }
 
-    // STEP 2: AI fallback — only fires when ALL conditions met:
+    // STEP 2: AI fallback — only when no preset matched AND:
     // - AI mode is on
-    // - segment is 8+ words (real sentence, not a fragment or filler)
-    // - not currently loading or showing a card
-    // - contains at least one objection-signal word
+    // - segment is 8+ words
+    // - contains an objection signal word
     const words = segmentText.trim().split(" ");
-    const objectionSignals = ["not","no","don't","don't","can't","won't","isn't","aren't","haven't","already","too","busy","expensive","interested","need","want","time","money","budget","contract","call","back","think","sure","later","maybe","someone","tried","works","complicated","difficult","worried","concern","problem","issue","never","nothing","nobody","nobody","without","unless","instead","different","better","cheaper","free","wait","slow","hard","why","how","what","when","who"];
-    const hasSignal = words.some(w => objectionSignals.includes(w.toLowerCase().replace(/[^a-z']/g, "")));
+    const objectionSignals = ["not","no","don't","cant","wont","isnt","arent","havent","already","too","busy","expensive","interested","need","want","time","money","budget","contract","back","think","sure","later","maybe","someone","tried","complicated","worried","concern","problem","issue","never","nothing","without","instead","different","better","cheaper","wait","slow","hard","why","how","what"];
+    const hasSignal = words.some(w => objectionSignals.includes(w.toLowerCase().replace(/[^a-z]/g, "")));
 
     if (aiMode && !aiLoading && words.length >= 8 && hasSignal) {
       fireAiRebuttal(segmentText, fullTranscriptRef.current.slice(-800));
@@ -492,7 +491,15 @@ export default function App() {
     setScreen("summary");
   };
 
-  const dismissCard = () => { if (dismissTimer.current) clearTimeout(dismissTimer.current); setActiveCard(null); setConfidence(c => Math.min(100, c + 5)); };
+  const dismissCard = () => {
+    if (dismissTimer.current) clearTimeout(dismissTimer.current);
+    // Reset the cooldown for the dismissed objection so it can fire again immediately if repeated
+    if (activeCard && activeCard.id && firedRef.current[activeCard.id]) {
+      firedRef.current[activeCard.id] = 0;
+    }
+    setActiveCard(null);
+    setConfidence(c => Math.min(100, c + 5));
+  };
   const saveEdit = (id, field, value) => { setCustomObjections(prev => { const ex = prev[selectedProduct] || []; const idx = ex.findIndex(c => c.id === id); if (idx >= 0) { const u = [...ex]; u[idx] = { ...u[idx], [field]: value }; return { ...prev, [selectedProduct]: u }; } return { ...prev, [selectedProduct]: [...ex, { id, [field]: value }] }; }); };
   const addObjection = () => { if (!newObjForm.triggers || !newObjForm.rebuttal) return; const o = { id: Date.now(), category: newObjForm.category, triggers: newObjForm.triggers.split(",").map(t => t.trim().toLowerCase()), keywords: [], rebuttal: newObjForm.rebuttal, rebuttal2: newObjForm.rebuttal2 || newObjForm.rebuttal, tip: newObjForm.tip || "Stay calm and confident.", tipIcon: "💡" }; setCustomObjections(prev => ({ ...prev, [selectedProduct]: [...(prev[selectedProduct] || []), o] })); setNewObjForm({ triggers: "", rebuttal: "", rebuttal2: "", tip: "", category: "Dismissive" }); setShowAddForm(false); };
   const deleteObjection = (id) => setCustomObjections(prev => ({ ...prev, [selectedProduct]: [...(prev[selectedProduct] || []), { id, _deleted: true }] }));
